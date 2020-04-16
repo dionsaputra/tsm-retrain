@@ -81,7 +81,7 @@ class VideoDataset(Dataset):
 
     def _get_split_offset(self, total_length):
         if self.split == DatasetSplit.train:
-            return 0, int(0.60 * total_length)
+            return 0, int(0.6 * total_length)
         elif self.split == DatasetSplit.val:
             return int(0.6*total_length), int(0.8*total_length)
         elif self.split == DatasetSplit.test:
@@ -143,10 +143,14 @@ class VideoLoader():
 if __name__ == "__main__":
     from preprocess import Preprocess
     directory = '/home/ds/Data/academic/dataset_v2'
-    transform = Preprocess.get_transform()
+    dataset = VideoDataset(directory)
+    for i in range(0, 2700, 60):
+        dataset[i]
+        # print(dataset[i])
+    # transform = Preprocess.get_transform()
 
-    loader = VideoLoader(directory, transform)
+    # loader = VideoLoader(directory, transform)
 
-    for idx, (data, label) in enumerate(loader.get_train_loader()):
-        print(label)
-        break
+    # for idx, (data, label) in enumerate(loader.get_train_loader()):
+    #     print(label)
+    #     break

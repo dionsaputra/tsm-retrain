@@ -4,6 +4,7 @@ import dataset
 import time
 import copy
 import math
+import logging
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -46,8 +47,9 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
     save_freq = 5
     model.eval()
     for epoch in range(num_epochs):
-        print(f"Epoch {epoch}/{num_epochs-1}")
+        print(f"Epoch {epoch+1}/{num_epochs}")
         print('-' * 10)
+        logging.info(f"Epoch {epoch+1}/{num_epochs}")
 
         for phase in ['train', 'val']:
             dataloader = None
@@ -70,15 +72,12 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
                         labels = labels.to(device)
 
                         output, *buffer = model(input, *buffer)
-                        video_loss += criterion(output, labels)
+                        weight = weighted_averaging(idx)
+                        video_loss += weight * criterion(output, labels)
                         x = softmax(output).data[0].tolist()
                         for j in range(len(scores)):
-                            scores[j] += weighted_averaging(idx)*x[j]
-
+                            scores[j] += weight*x[j]
                         idx += 1
-
-                        _, curr_max = torch.max(output, 1)
-                        # print('curr_max:', curr_max.item())
 
                     preds = 0
                     for i in range(len(scores)):
@@ -100,8 +99,10 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
             epoch_loss = running_loss / len(dataloader.dataset)
             epoch_acc = running_corrects / len(dataloader.dataset)
 
-            print('{} Loss: {:.4f} Acc: {:.4f}'.format(
-                phase, epoch_loss, epoch_acc))
+            loss_acc_info = '{} Loss: {:.4f} Acc: {:.4f}'.format(
+                phase, epoch_loss, epoch_acc)
+            print(loss_acc_info)
+            logging.info(loss_acc_info)
 
             if phase == 'val' and epoch_acc > best_acc:
                 best_acc = epoch_acc
@@ -109,14 +110,15 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
             if phase == 'val':
                 val_acc_history.append(epoch_acc)
 
-        # if epoch % save_freq == 0:
-        if True:
+        if epoch % save_freq == 0:
             torch.save(best_model_wts, f'{time.time()}.pth')
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
-    print('Best val Acc: {:4f}'.format(best_acc))
+    best_val_acc_info = 'Best val Acc: {:4f}'.format(best_acc)
+    print(best_val_acc_info)
+    logging.info(best_val_acc_info)
 
     model.load_state_dict(best_model_wts)
     return model, val_acc_history
@@ -134,25 +136,31 @@ def create_optimizer(model):
 
 
 if __name__ == "__main__":
+
+    # setup dataset
     from preprocess import Preprocess
     directory = '/home/ds/Data/academic/dataset_v2'
     transform = Preprocess.get_transform()
-
     loader = dataset.VideoLoader(directory, transform)
-
-    model, buffer = initialize_model("pretrained.pth.tar")
-    criterion = torch.nn.CrossEntropyLoss()
     train_loader = loader.get_train_loader(batch_size=1)
     val_loader = loader.get_val_loader(batch_size=1)
+
+    # setup model
+    model, buffer = initialize_model("pretrained.pth.tar")
+
+    # setup trainer
+    criterion = torch.nn.CrossEntropyLoss()
     optimizer = create_optimizer(model)
+
+    # setup logger
+    logging.basicConfig(level=logging.INFO, filename='training_log.txt')
 
     model = model.to(device)
     buffer = [b.to(device) for b in buffer]
-
     model, hist = train(model, buffer, train_loader,
-                        val_loader, criterion, optimizer)
+                        val_loader, criterion, optimizer, num_epochs=5)
 
     torch.save(model.state_dict(), 'result.pth')
     with open('val_history.txt', 'w') as f:
         for item in hist:
-            f.write(str(item.item()))
+            f.write(str(item))
