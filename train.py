@@ -44,7 +44,7 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
 
     softmax = torch.nn.Softmax(1)
 
-    save_freq = 5
+    save_freq = 10
     model.eval()
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
@@ -124,6 +124,43 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
     return model, val_acc_history
 
 
+def test(model, buffer, dataloader):
+    softmax = torch.nn.Softmax(1)
+    model.eval()
+    running_corrects = 0
+    counter = 0
+    for inputs, labels in dataloader:
+        scores = [0.0 for _ in range(27)]
+        idx = 0
+        for input in inputs:
+            input = input.squeeze(0).to(device)
+            labels = labels.to(device)
+
+            output, *buffer = model(input, *buffer)
+            weight = weighted_averaging(idx)
+            x = softmax(output).data[0].tolist()
+            for j in range(len(scores)):
+                scores[j] += weight*x[j]
+            idx += 1
+
+        preds = 0
+        for i in range(len(scores)):
+            if scores[i] > scores[preds]:
+                preds = i
+
+        if preds == labels.data:
+            running_corrects += 1
+        counter += 1
+        print('{:4f}, {}'.format(running_corrects/counter,
+                                 counter*100/len(dataloader.dataset)), end="\r")
+
+    epoch_acc = running_corrects / len(dataloader.dataset)
+
+    loss_acc_info = 'Acc: {:.4f}'.format(epoch_acc)
+    print(loss_acc_info)
+    # logging.info(loss_acc_info)
+
+
 def create_optimizer(model):
     params_to_update = []
     print("Params to learn:")
@@ -137,30 +174,37 @@ def create_optimizer(model):
 
 if __name__ == "__main__":
 
+    train_mode = True
+
     # setup dataset
     from preprocess import Preprocess
-    directory = '/home/ds/Data/academic/dataset_v2'
+    directory = '/home/ds/Data/academic/dataset_v3'
     transform = Preprocess.get_transform()
     loader = dataset.VideoLoader(directory, transform)
     train_loader = loader.get_train_loader(batch_size=1)
     val_loader = loader.get_val_loader(batch_size=1)
+    test_loader = loader.get_test_loader(batch_size=1)
 
     # setup model
-    model, buffer = initialize_model("pretrained.pth.tar")
+    model, buffer = initialize_model("result1.pth")
 
     # setup trainer
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = create_optimizer(model)
 
     # setup logger
-    logging.basicConfig(level=logging.INFO, filename='training_log.txt')
+    logging.basicConfig(level=logging.INFO, filename='training_log1.txt')
 
     model = model.to(device)
     buffer = [b.to(device) for b in buffer]
-    model, hist = train(model, buffer, train_loader,
-                        val_loader, criterion, optimizer, num_epochs=5)
 
-    torch.save(model.state_dict(), 'result.pth')
-    with open('val_history.txt', 'w') as f:
-        for item in hist:
-            f.write(str(item))
+    if train_mode:
+        model, hist = train(model, buffer, train_loader,
+                            val_loader, criterion, optimizer, num_epochs=50)
+
+        torch.save(model.state_dict(), 'result1.pth')
+        with open('val_history1.txt', 'w') as f:
+            for item in hist:
+                f.write(str(item))
+    else:
+        test(model, buffer, test_loader)
