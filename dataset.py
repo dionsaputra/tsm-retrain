@@ -1,6 +1,5 @@
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-from decord import VideoReader
 from PIL import Image
 import os
 import cv2

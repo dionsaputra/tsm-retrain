@@ -88,10 +88,10 @@ class Preprocess:
     #     return frame
 
     @staticmethod
-    def get_transform():
+    def get_transform(size):
         cropping = torchvision.transforms.Compose([
-            Preprocess.GroupScale(256),
-            Preprocess.GroupCenterCrop(224),
+            Preprocess.GroupScale(size),
+            Preprocess.GroupCenterCrop(size),
         ])
         transform = torchvision.transforms.Compose([
             cropping,

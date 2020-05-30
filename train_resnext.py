@@ -5,38 +5,37 @@ import time
 import copy
 import math
 import logging
+import resnext
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def initialize_model(pretrained_path):
-    model = tsm_mobilenetv2.load_model(pretrained_path)
+    torch_module = resnext.resnet101(sample_size=112, sample_duration=16, num_classes=27)
+    state_dict = torch.load(pretrained_path)["state_dict"]
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:] # remove `module.`
+        new_state_dict[name] = v
+        
+    torch_module.load_state_dict(new_state_dict)
 
-    # freezee all conv-layer and fc-layer
-    for param in model.parameters():
+    # freeze feature-extraction
+    for param in torch_module.parameters():
         param.requires_grad = False
 
     # unfreeze fc-layer
-    model.classifier.weight.requires_grad = True
-    buffer = [torch.zeros([1, 3, 56, 56]),
-              torch.zeros([1, 4, 28, 28]),
-              torch.zeros([1, 4, 28, 28]),
-              torch.zeros([1, 8, 14, 14]),
-              torch.zeros([1, 8, 14, 14]),
-              torch.zeros([1, 8, 14, 14]),
-              torch.zeros([1, 12, 14, 14]),
-              torch.zeros([1, 12, 14, 14]),
-              torch.zeros([1, 20, 7, 7]),
-              torch.zeros([1, 20, 7, 7])]
+    torch_module.fc.weight.requires_grad = True
 
-    return model, buffer
+    return torch_module
 
 
 def weighted_averaging(idx):
     return 1.0/(1+math.exp(-0.2*(idx-8)))
 
 
-def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epochs=50):
+def train(model, train_loader, val_loader, criterion, optimizer, num_epochs=50):
     since = time.time()
     val_acc_history = []
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -44,7 +43,7 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
 
     softmax = torch.nn.Softmax(1)
 
-    save_freq = 10
+    save_freq = 1
     model.eval()
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
@@ -63,36 +62,28 @@ def train(model, buffer, train_loader, val_loader, criterion, optimizer, num_epo
 
             counter = 0
             for inputs, labels in dataloader:
-                with torch.set_grad_enabled(phase == 'train'):
-                    scores = [0.0 for _ in range(27)]
-                    idx = 0
-                    video_loss = 0
-                    for input in inputs:
-                        input = input.squeeze(0).to(device)
-                        labels = labels.to(device)
+                with torch.set_grad_enabled(phase == 'train'):            
+                    inputs_3d = torch.Tensor(16, 1, 3, 112, 112)
+                    torch.cat(inputs, out=inputs_3d)
+                    inputs_3d = inputs_3d.permute(1, 2, 0, 3, 4)
+                    inputs_3d = inputs_3d.to(device)
+                    labels = labels.to(device)
 
-                        output, *buffer = model(input, *buffer)
-                        weight = weighted_averaging(idx)
-                        video_loss += weight * criterion(output, labels)
-                        x = softmax(output).data[0].tolist()
-                        for j in range(len(scores)):
-                            scores[j] += weight*x[j]
-                        idx += 1
+                    output = model(inputs_3d)
+                    loss = criterion(output, labels)
 
-                    preds = 0
-                    for i in range(len(scores)):
-                        if scores[i] > scores[preds]:
-                            preds = i
+                    output = output.data[0].tolist()
+                    preds = output.index(max(output))
 
-                    avg_video_loss = video_loss / len(inputs)
                     if phase == 'train':
                         optimizer.zero_grad()
-                        avg_video_loss.backward()
+                        loss.backward()
                         optimizer.step()
 
-                    running_loss += avg_video_loss.item()
+                    running_loss += loss.item()
                     if preds == labels.data:
                         running_corrects += 1
+
                 # print(f'progress: {counter}/{len(dataloader)}')
                 counter += 1
 
@@ -169,42 +160,94 @@ def create_optimizer(model):
             params_to_update.append(param)
             print("\t", name)
 
-    return torch.optim.SGD(params_to_update, lr=0.01, momentum=0.9)
+    return torch.optim.SGD(params_to_update, lr=0.01, momentum=0.9, weight_decay=0.001)
+
+def test(model, dataloader):
+    softmax = torch.nn.Softmax(1)
+    model = model.eval()
+    running_corrects = 0
+    counter = 0
+
+    for inputs, label in dataloader:    
+        inputs_3d = torch.Tensor(16, 1, 3, 112, 112)
+        torch.cat(inputs, out=inputs_3d)
+        inputs_3d = inputs_3d.permute(1, 2, 0, 3, 4)
+        inputs_3d = inputs_3d.to(device)
+
+        output = model(inputs_3d)
+        output = output.data[0].tolist()
+        print(output)
+        # print(output.index(max(output)))
+
+        # x = softmax(output).data[0].tolist()
+        # print(x)
+        # pred = x.index(max(x))
+        # print(pred, label[0])
+
+    # for inputs, labels in dataloader:
+    #     scores = [0.0 for _ in range(27)]
+    #     idx = 0
+    #     for input in inputs:
+    #         input = input.squeeze(0).to(device)
+    #         labels = labels.to(device)
+
+    #         output, *buffer = model(input, *buffer)
+    #         weight = weighted_averaging(idx)
+    #         x = softmax(output).data[0].tolist()
+    #         for j in range(len(scores)):
+    #             scores[j] += weight*x[j]
+    #         idx += 1
+
+    #     preds = 0
+    #     for i in range(len(scores)):
+    #         if scores[i] > scores[preds]:
+    #             preds = i
+
+    #     if preds == labels.data:
+    #         running_corrects += 1
+    #     counter += 1
+    #     print('{:4f}, {}'.format(running_corrects/counter,
+    #                              counter*100/len(dataloader.dataset)), end="\r")
+
+    # epoch_acc = running_corrects / len(dataloader.dataset)
+
+    # loss_acc_info = 'Acc: {:.4f}'.format(epoch_acc)
+    # print(loss_acc_info)
+    # logging.info(loss_acc_info)
 
 
 if __name__ == "__main__":
 
-    train_mode = False
+    train_mode = True
 
     # setup dataset
     from preprocess import Preprocess
     directory = '/home/ds/Data/academic/dataset_v2'
-    transform = Preprocess.get_transform(224)
+    transform = Preprocess.get_transform(112)
     loader = dataset.VideoLoader(directory, transform)
     train_loader = loader.get_train_loader(batch_size=1)
     val_loader = loader.get_val_loader(batch_size=1)
     test_loader = loader.get_test_loader(batch_size=1)
 
     # setup model
-    model, buffer = initialize_model("result2.pth")
+    model = initialize_model("/home/ds/Data/academic/shared_models_v1/models/jester_resnext_101_RGB_32.pth")
+    model = model.to(device)
 
     # setup trainer
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = create_optimizer(model)
 
     # setup logger
-    logging.basicConfig(level=logging.INFO, filename='training_log1.txt')
-
-    model = model.to(device)
-    buffer = [b.to(device) for b in buffer]
+    logging.basicConfig(level=logging.INFO, filename='training_log_kopuklu.txt')
 
     if train_mode:
-        model, hist = train(model, buffer, train_loader,
-                            val_loader, criterion, optimizer, num_epochs=50)
+        model, hist = train(model, train_loader,
+                            val_loader, criterion, optimizer, num_epochs=100)
 
-        torch.save(model.state_dict(), 'result1.pth')
+        torch.save(model.state_dict(), 'result_kopuklu.pth')
         with open('val_history1.txt', 'w') as f:
             for item in hist:
                 f.write(str(item))
     else:
-        test(model, buffer, test_loader)
+        #test(model, buffer, test_loader)
+        pass
